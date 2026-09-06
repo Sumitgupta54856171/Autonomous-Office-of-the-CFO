@@ -253,3 +253,101 @@ async def test_prevent_double_matching():
         assert data["reconciled_paid_count"] == 1
         assert data["flagged_exception_count"] == 1
 
+
+@pytest.mark.asyncio
+async def test_langgraph_agent_trigger_autonomous():
+    """Test POST /api/agent/trigger with NO payload: autonomously queries DB and reconciles."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # 1. Create two pending invoices
+        await client.post(
+            "/api/invoices/",
+            json={"vendor_name": "Datadog", "amount": 800.00, "due_date": "2026-10-01"},
+        )
+        await client.post(
+            "/api/invoices/",
+            json={"vendor_name": "Salesforce", "amount": 2500.00, "due_date": "2026-10-05"},
+        )
+
+        # 2. Create one matching bank ledger transaction for Datadog
+        await client.post(
+            "/api/ledger/",
+            json={
+                "transaction_date": "2026-09-20",
+                "received_amount": 800.00,
+                "description": "Wire Datadog APM",
+            },
+        )
+
+        # 3. Trigger LangGraph agent with NO request body
+        response = await client.post("/api/agent/trigger")
+        assert response.status_code == 200
+        data = response.json()
+        assert data == {"processed": 2, "paid": 1, "exceptions": 1}
+
+        # 4. Verify database state
+        inv1 = (await client.get("/api/invoices/1")).json()
+        assert inv1["status"] == "paid"
+
+        inv2 = (await client.get("/api/invoices/2")).json()
+        assert inv2["status"] == "exception_human_review"
+
+
+@pytest.mark.asyncio
+async def test_langgraph_agent_trigger_empty():
+    """Test POST /api/agent/trigger when no pending invoices exist."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/agent/trigger")
+        assert response.status_code == 200
+        assert response.json() == {"processed": 0, "paid": 0, "exceptions": 0}
+
+
+@pytest.mark.asyncio
+async def test_langgraph_agent_trigger_get_endpoint():
+    """Test GET /api/agent/trigger works identically with no payload."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/agent/trigger")
+        assert response.status_code == 200
+        data = response.json()
+        assert "processed" in data
+        assert "paid" in data
+        assert "exceptions" in data
+
+
+@pytest.mark.asyncio
+async def test_langgraph_react_agent_fuzzy_matching_and_wire_fees():
+    """Test ReAct Agent handles vendor abbreviations and wire transfer fees."""
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Create invoice for TechCorp Solutions ($1000)
+        await client.post(
+            "/api/invoices/",
+            json={"vendor_name": "TechCorp Solutions", "amount": 1000.00, "due_date": "2026-09-30"},
+        )
+        # Create bank ledger entry with abbreviation 'TC-INC' and $20 wire fee deduction ($980)
+        await client.post(
+            "/api/ledger/",
+            json={
+                "transaction_date": "2026-09-25",
+                "received_amount": 980.00,
+                "description": "WIRE FROM TC-INC (LESS $20 WIRE FEE)",
+            },
+        )
+
+        # Trigger ReAct agent
+        response = await client.post("/api/agent/trigger")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["processed"] == 1
+        assert data["paid"] == 1
+        assert data["exceptions"] == 0
+
+        # Verify database invoice record contains reasoning
+        inv_res = await client.get("/api/invoices/1")
+        assert inv_res.status_code == 200
+        invoice = inv_res.json()
+        assert invoice["status"] == "paid"
+        assert invoice["matched_ledger_id"] == 1
+        assert invoice["reasoning"] is not None
+        assert len(invoice["reasoning"]) > 0
+
+
+

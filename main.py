@@ -12,16 +12,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent_logic import reconcile_invoices
+from agent import AgentState, agent_graph, run_autonomous_agent
+
 from database import close_db, get_db, init_db
 from models import BankLedger, Invoice, InvoiceStatus
 from schemas import (
+    AgentSummaryResponse,
     BankLedgerCreate,
     BankLedgerResponse,
     DashboardStats,
     InvoiceCreate,
     InvoiceResponse,
-    ReconciliationResponse,
+    
     ResolveExceptionRequest,
 )
 
@@ -227,30 +229,37 @@ async def list_ledger_entries(
 # ---------------------------------------------------------
 # AI Agent Reconciliation Endpoint
 # ---------------------------------------------------------
+
+
+
 @app.post(
     "/api/agent/run-reconciliation",
-    response_model=ReconciliationResponse,
+    response_model=AgentSummaryResponse,
     tags=["AI Agent"],
-    summary="Trigger autonomous invoice reconciliation",
+    summary="Trigger autonomous LangGraph reconciliation agent",
 )
-async def trigger_reconciliation(db: AsyncSession = Depends(get_db)):
-    """Run the AI Agent's autonomous reconciliation engine.
+async def trigger_langgraph_agent():
+    """Autonomously executes the LangGraph ReAct reconciliation agent with NO manual input:
 
-    - Scans all 'pending' invoices.
-    - Evaluates unmatched bank ledger transactions.
-    - Updates exact amount matches to 'paid'.
-    - Flags partial payments and missing payments to 'exception_human_review'.
+    1. Connects to PostgreSQL and fetches ALL invoices where status='pending'.
+    2. Employs LangGraph ReAct agent powered by Fireworks AI LLM with tools:
+       - `get_pending_invoices`: queries database for pending items.
+       - `search_ledger`: queries bank ledger with fuzzy matching and wire fee support.
+       - `update_status`: updates database status and records the LLM's reasoning.
+    3. Automatically updates database: sets status to 'paid' if matched, or 'exception_human_review' if not matched/partial.
+    4. Returns summary: {"processed": N, "paid": X, "exceptions": Y}.
     """
     try:
-        result = await reconcile_invoices(db)
-        return result
+        summary = await run_autonomous_agent()
+        logger.info("Autonomous LangGraph ReAct agent finished: %s", summary)
+        return summary
     except Exception as e:
-        await db.rollback()
-        logger.error("Reconciliation agent execution failed: %s", e, exc_info=True)
+        logger.error("LangGraph agent execution failed: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"AI Agent reconciliation failed: {str(e)}",
+            detail=f"LangGraph Agent execution failed: {str(e)}",
         )
+
 
 
 # ---------------------------------------------------------
