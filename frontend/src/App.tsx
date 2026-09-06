@@ -55,15 +55,18 @@ export default function App() {
   const [notification, setNotification] = useState<BannerNotification | null>(null);
 
   // Fetch pending exceptions from the backend API
+  
   const fetchExceptions = async () => {
+    setLoading(true);
+    setError(null);
     try {
       const response = await fetch(`${API_BASE_URL}/api/exceptions/`);
       if (!response.ok) {
         throw new Error(`Failed to fetch exceptions: ${response.status} ${response.statusText}`);
       }
+      console.log("Fetched exceptions:", response);
       const data: Invoice[] = await response.json();
       setExceptions(data);
-      setError(null);
     } catch (err: unknown) {
       console.error("Error fetching exceptions:", err);
       const errorMessage =
@@ -74,13 +77,36 @@ export default function App() {
     }
   };
 
-  const handleManualRefresh = () => {
-    setLoading(true);
-    fetchExceptions();
-  };
-
   useEffect(() => {
-    fetchExceptions();
+    let ignore = false;
+    async function loadInitialExceptions() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/exceptions/`);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch exceptions: ${response.status} ${response.statusText}`);
+        }
+        const data: Invoice[] = await response.json();
+        if (!ignore) {
+          setExceptions(data);
+        }
+      } catch (err: unknown) {
+        if (!ignore) {
+          console.error("Error fetching exceptions:", err);
+          const errorMessage =
+            err instanceof Error ? err.message : "Failed to connect to AutoCFO backend server.";
+          setError(errorMessage);
+        }
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadInitialExceptions();
+    return () => {
+      ignore = true;
+    };
   }, []);
 
   // Handle human review resolution (Approve as 'paid' or Reject as 'rejected')
@@ -178,7 +204,7 @@ export default function App() {
             <Button
               variant="outline"
               size="sm"
-              onClick={handleManualRefresh}
+              onClick={fetchExceptions}
               disabled={loading}
               className="gap-2 w-full sm:w-auto text-xs"
             >
@@ -328,7 +354,7 @@ export default function App() {
                   <h4 className="text-sm font-semibold">Unable to Load Exceptions</h4>
                   <p className="text-xs text-muted-foreground max-w-md mt-1">{error}</p>
                 </div>
-                <Button size="sm" variant="outline" onClick={handleManualRefresh} className="gap-2 text-xs mt-2">
+                <Button size="sm" variant="outline" onClick={fetchExceptions} className="gap-2 text-xs mt-2">
                   <RefreshCw className="h-3.5 w-3.5" />
                   Try Again
                 </Button>
@@ -348,7 +374,7 @@ export default function App() {
                     been reconciled or resolved.
                   </p>
                 </div>
-                <Button size="sm" variant="outline" onClick={handleManualRefresh} className="gap-2 text-xs mt-2">
+                <Button size="sm" variant="outline" onClick={fetchExceptions} className="gap-2 text-xs mt-2">
                   <RefreshCw className="h-3.5 w-3.5" />
                   Check for New Invoices
                 </Button>
