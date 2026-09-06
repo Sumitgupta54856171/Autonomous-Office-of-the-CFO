@@ -29,6 +29,7 @@
   - [3. Frontend Dashboard Setup (React + Vite)](#3-frontend-dashboard-setup-react--vite)
 - [Running Automated Tests](#-running-automated-tests)
 - [Seed Demonstration Data](#-seed-demonstration-data)
+- [License](#-license)
 
 ---
 
