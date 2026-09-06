@@ -6,10 +6,28 @@ export interface Invoice {
   amount: number
   due_date: string
   status: InvoiceStatusType
+  vendor_email?: string | null
+  draft_email_content?: string | null
   matched_ledger_id?: number | null
+  reasoning?: string | null
   resolution_notes?: string | null
   created_at?: string
   updated_at?: string
+}
+
+export interface SendVendorEmailResponse {
+  status: string
+  message: string
+  invoice_id: number
+  vendor_email: string
+  email_content: string
+  is_real_email?: boolean
+  sender_email?: string | null
+}
+
+export interface EmailConfigStatus {
+  is_configured: boolean
+  sender_email?: string | null
 }
 
 export interface BankLedger {

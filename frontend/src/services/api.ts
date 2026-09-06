@@ -1,8 +1,10 @@
 import type {
   BankLedger,
   DashboardStats,
+  EmailConfigStatus,
   Invoice,
   ReconciliationResponse,
+  SendVendorEmailResponse,
   TaskStatusResponse,
   UploadInvoiceResponse,
 } from '../types'
@@ -34,6 +36,15 @@ async function getAuthHeaders(): Promise<Record<string, string>> {
 export async function checkHealth(): Promise<{ status: string; database: string }> {
   const res = await fetch(`${API_BASE_URL}/health`)
   if (!res.ok) throw new Error('Backend health check failed')
+  return res.json()
+}
+
+export async function fetchEmailStatus(): Promise<EmailConfigStatus> {
+  const authHeaders = await getAuthHeaders()
+  const res = await fetch(`${API_BASE_URL}/api/email/status`, {
+    headers: authHeaders,
+  })
+  if (!res.ok) throw new Error('Failed to fetch email status')
   return res.json()
 }
 
@@ -69,6 +80,26 @@ export async function resolveException(
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}))
     throw new Error(errorData.detail || `Failed to resolve exception (${res.status})`)
+  }
+  return res.json()
+}
+
+export async function sendVendorEmail(
+  invoiceId: number,
+  data?: {
+    vendor_email?: string
+    email_content?: string
+  }
+): Promise<SendVendorEmailResponse> {
+  const authHeaders = await getAuthHeaders()
+  const res = await fetch(`${API_BASE_URL}/api/exceptions/${invoiceId}/send-email`, {
+    method: 'POST',
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify(data || {}),
+  })
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}))
+    throw new Error(errorData.detail || `Failed to dispatch vendor email (${res.status})`)
   }
   return res.json()
 }

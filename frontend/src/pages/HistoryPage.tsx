@@ -29,6 +29,7 @@ import {
 } from 'lucide-react'
 import { fetchInvoices } from '../services/api'
 import type { Invoice } from '../types'
+import { useLazyLoad } from '../hooks/useLazyLoad'
 
 export function HistoryPage() {
   const [historyInvoices, setHistoryInvoices] = useState<Invoice[]>([])
@@ -90,6 +91,16 @@ export function HistoryPage() {
       (inv.resolution_notes && inv.resolution_notes.toLowerCase().includes(term))
     )
   })
+
+  // Scroll-based progressive lazy loading
+  const {
+    visibleItems: visibleInvoices,
+    hasMore: hasMoreInvoices,
+    isLoadingMore: loadingMoreInvoices,
+    sentinelRef: historySentinelRef,
+    visibleCount: visibleInvoicesCount,
+    totalCount: totalInvoicesCount,
+  } = useLazyLoad(filteredInvoices, { batchSize: 15, stepSize: 10 })
 
   // Calculations
   const paidList = historyInvoices.filter((i) => i.status === 'paid')
@@ -246,7 +257,7 @@ export function HistoryPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredInvoices.map((inv) => {
+                  {visibleInvoices.map((inv) => {
                     const isHumanAction =
                       inv.resolution_notes?.toLowerCase().includes('human review') ||
                       inv.resolution_notes?.toLowerCase().includes('cfo')
@@ -307,6 +318,27 @@ export function HistoryPage() {
                   })}
                 </TableBody>
               </Table>
+
+              {/* Lazy Loading Sentinel Bar */}
+              <div
+                ref={historySentinelRef}
+                className="p-3 border-t border-border flex items-center justify-between text-xs text-muted-foreground bg-muted/20"
+              >
+                <div className="flex items-center gap-2">
+                  {loadingMoreInvoices && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+                  <span>
+                    Showing {visibleInvoicesCount} of {totalInvoicesCount}{' '}
+                    {totalInvoicesCount === 1 ? 'record' : 'records'}
+                  </span>
+                </div>
+                {hasMoreInvoices ? (
+                  <span className="text-[11px] text-muted-foreground">Scroll down to load more</span>
+                ) : totalInvoicesCount > 0 ? (
+                  <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    All history records loaded
+                  </span>
+                ) : null}
+              </div>
             </div>
           )}
         </CardContent>

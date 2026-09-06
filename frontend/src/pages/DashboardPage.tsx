@@ -16,6 +16,16 @@ import {
 } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
+} from '@/components/ui/dialog'
 import {
   Sparkles,
   CheckCircle2,
@@ -28,24 +38,37 @@ import {
   Loader2,
   ShieldAlert,
   Bot,
+  Mail,
+  Send,
+  AlertCircle,
 } from 'lucide-react'
 import {
+  fetchEmailStatus,
   fetchStats,
   fetchExceptions,
   resolveException,
   runReconciliation,
+  sendVendorEmail,
 } from '../services/api'
-import type { DashboardStats, Invoice, BannerNotification, ReconciliationResponse } from '../types'
+import type { DashboardStats, EmailConfigStatus, Invoice, BannerNotification, ReconciliationResponse } from '../types'
+import { useLazyLoad } from '../hooks/useLazyLoad'
 
 export function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [exceptions, setExceptions] = useState<Invoice[]>([])
+  const [emailConfig, setEmailConfig] = useState<EmailConfigStatus | null>(null)
   const [loadingStats, setLoadingStats] = useState(true)
   const [loadingExceptions, setLoadingExceptions] = useState(true)
   const [reconciling, setReconciling] = useState(false)
   const [processingId, setProcessingId] = useState<number | null>(null)
   const [notification, setNotification] = useState<BannerNotification | null>(null)
   const [lastReconResult, setLastReconResult] = useState<ReconciliationResponse | null>(null)
+
+  // Autonomous Vendor Follow-up (Auto-Email) Dialog State
+  const [reviewingEmailInvoice, setReviewingEmailInvoice] = useState<Invoice | null>(null)
+  const [emailRecipient, setEmailRecipient] = useState('')
+  const [emailDraftText, setEmailDraftText] = useState('')
+  const [sendingEmail, setSendingEmail] = useState(false)
 
   // Modal / prompt state for custom resolution note (optional)
   const [resolvingItem, setResolvingItem] = useState<{
@@ -58,11 +81,14 @@ export function DashboardPage() {
     setLoadingStats(true)
     setLoadingExceptions(true)
     try {
-      const [statsData, exceptionsData] = await Promise.all([
+      const [statsData, exceptionsData, emailStatus] = await Promise.all([
         fetchStats(),
         fetchExceptions(),
+        fetchEmailStatus().catch(() => null),
       ])
       setStats(statsData)
+      setExceptions(exceptionsData)
+      if (emailStatus) setEmailConfig(emailStatus)
       setExceptions(exceptionsData)
     } catch (err: unknown) {
       console.error('Failed to load dashboard data:', err)
@@ -136,6 +162,106 @@ export function DashboardPage() {
       alert(`Error resolving exception: ${err instanceof Error ? err.message : 'Failed to resolve'}`)
     } finally {
       setProcessingId(null)
+    }
+  }
+
+  // Helper to remove any markdown ** asterisks and formatting symbols from email drafts
+  const cleanEmailContent = (text: string): string => {
+    if (!text) return ''
+    return text
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      .replace(/^#{1,6}\s*/gm, '')
+      .replace(/^\s*\*\s+/gm, ' - ')
+      .replace(/^[ \t]*[-*_]{3,}[ \t]*$/gm, '')
+      .replace(/\*\*/g, '')
+      .replace(/`/g, '')
+      .trim()
+  }
+
+  // Progressive scroll-based lazy loading for exceptions queue
+  const {
+    visibleItems: visibleExceptions,
+    hasMore: hasMoreExceptions,
+    isLoadingMore: loadingMoreExceptions,
+    sentinelRef: exceptionsSentinelRef,
+    visibleCount: visibleExceptionsCount,
+    totalCount: totalExceptionsCount,
+    loadMore: loadMoreExceptions,
+  } = useLazyLoad(exceptions, { batchSize: 10, stepSize: 10, resetKey: exceptions.length })
+
+  // Open Autonomous Vendor Email Dialog
+  const openEmailDialog = (invoice: Invoice) => {
+    setReviewingEmailInvoice(invoice)
+    const fallbackEmail = `billing@${invoice.vendor_name.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`
+    setEmailRecipient(invoice.vendor_email || fallbackEmail)
+
+    if (invoice.draft_email_content && invoice.draft_email_content.trim()) {
+      setEmailDraftText(cleanEmailContent(invoice.draft_email_content))
+    } else {
+      setEmailDraftText(
+        `Subject: Payment Discrepancy Notice – Invoice #INV-${invoice.id} [${invoice.vendor_name}]
+
+Dear ${invoice.vendor_name} Accounts Receivable Team,
+
+I hope this message finds you well. I am writing on behalf of the AutoCFO Finance Team regarding Invoice #INV-${invoice.id} for ${formatCurrency(invoice.amount)} due on ${formatDate(invoice.due_date)}.
+
+During our autonomous financial reconciliation process, our system identified an unresolved payment discrepancy:
+ - Invoiced Amount: ${formatCurrency(invoice.amount)}
+ - Ledger Record: No matching deposit identified in our bank ledger
+ - Discrepancy Reason: ${cleanEmailContent(invoice.resolution_notes || 'Flagged for human review')}
+
+To ensure accurate accounting and maintain up-to-date ledger balances, could you kindly review your records and provide updated remittance advice or an account statement?
+
+Thank you for your prompt assistance.
+
+Sincerely,
+
+AutoCFO Autonomous Finance Team
+accounts@autocfo.com`
+      )
+    }
+  }
+
+  // Dispatch Email to Vendor (Simulated SMTP for Hackathon Demo)
+  const handleSendEmail = async () => {
+    if (!reviewingEmailInvoice) return
+    setSendingEmail(true)
+    try {
+      const response = await sendVendorEmail(reviewingEmailInvoice.id, {
+        vendor_email: emailRecipient.trim(),
+        email_content: emailDraftText.trim(),
+      })
+
+      setNotification({
+        type: 'success',
+        message: response.is_real_email
+          ? `Real email sent via Gmail (${response.sender_email || emailConfig?.sender_email || 'SMTP'})!`
+          : 'Vendor email simulated and logged!',
+        subMessage: `Dispatched to ${response.vendor_email} for Invoice #INV-${reviewingEmailInvoice.id}.`,
+      })
+
+      // Update local invoice state
+      setExceptions((prev) =>
+        prev.map((item) =>
+          item.id === reviewingEmailInvoice.id
+            ? {
+                ...item,
+                vendor_email: response.vendor_email,
+                draft_email_content: response.email_content,
+                resolution_notes: `${item.resolution_notes || ''} | Dispatched follow-up email to ${response.vendor_email}`,
+              }
+            : item
+        )
+      )
+
+      setReviewingEmailInvoice(null)
+    } catch (err: unknown) {
+      alert(`Error sending email: ${err instanceof Error ? err.message : 'Failed to dispatch email'}`)
+    } finally {
+      setSendingEmail(false)
     }
   }
 
@@ -432,7 +558,7 @@ export function DashboardPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {exceptions.map((inv) => (
+                  {visibleExceptions.map((inv) => (
                     <TableRow key={inv.id} className="hover:bg-muted/30">
                       <TableCell className="font-mono text-xs font-semibold">
                         #INV-{String(inv.id).padStart(3, '0')}
@@ -454,6 +580,16 @@ export function DashboardPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEmailDialog(inv)}
+                            className="border-indigo-300 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 gap-1.5 text-xs h-8"
+                            title="Review and dispatch autonomous vendor follow-up email"
+                          >
+                            <Mail className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                            Review Email
+                          </Button>
                           <Button
                             size="sm"
                             disabled={processingId === inv.id}
@@ -487,10 +623,193 @@ export function DashboardPage() {
                   ))}
                 </TableBody>
               </Table>
+
+              {/* Lazy Loading Sentinel Bar */}
+              {totalExceptionsCount > 0 && (
+                <div
+                  ref={hasMoreExceptions ? exceptionsSentinelRef : undefined}
+                  className="p-3 border-t border-border flex items-center justify-between text-xs text-muted-foreground bg-muted/20"
+                >
+                  <div className="flex items-center gap-2">
+                    <span>
+                      Showing {visibleExceptionsCount} of {totalExceptionsCount}{' '}
+                      {totalExceptionsCount === 1 ? 'exception' : 'exceptions'}
+                    </span>
+                  </div>
+                  {hasMoreExceptions ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-muted-foreground hidden sm:inline">
+                        Scroll down to load more
+                      </span>
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        disabled={loadingMoreExceptions}
+                        onClick={loadMoreExceptions}
+                        className="h-7 text-xs px-2.5"
+                      >
+                        {loadingMoreExceptions ? (
+                          <>
+                            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                            Loading...
+                          </>
+                        ) : (
+                          'Load More'
+                        )}
+                      </Button>
+                    </div>
+                  ) : (
+                    <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      All exceptions loaded
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </CardContent>
       </Card>
+
+      {/* Autonomous Vendor Follow-up (Auto-Email) shadcn Dialog Modal */}
+      <Dialog
+        open={reviewingEmailInvoice !== null}
+        onOpenChange={(open) => {
+          if (!open) setReviewingEmailInvoice(null)
+        }}
+      >
+        <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+          <DialogHeader className="border-b pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
+                  <Mail className="h-5 w-5" />
+                </div>
+                <div>
+                  <DialogTitle className="text-base font-bold">
+                    Autonomous Vendor Email Review
+                  </DialogTitle>
+                  <DialogDescription className="text-xs">
+                    Review, edit, and dispatch the discrepancy follow-up email drafted autonomously by AutoCFO.
+                  </DialogDescription>
+                </div>
+              </div>
+              {emailConfig?.is_configured ? (
+                <Badge className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-300 text-[10px] gap-1.5 py-0.5 self-start sm:self-center shrink-0">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                  Live Gmail Active: {emailConfig.sender_email}
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300 self-start sm:self-center shrink-0">
+                  Simulated SMTP
+                </Badge>
+              )}
+            </div>
+          </DialogHeader>
+
+          {reviewingEmailInvoice && (
+            <div className="space-y-4 py-2 overflow-y-auto pr-1">
+              {/* Recipient & Metadata Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 rounded-lg bg-muted/40 border border-border/80 text-xs">
+                <div>
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1">
+                    From (Sender)
+                  </label>
+                  <Input
+                    readOnly
+                    value={emailConfig?.sender_email || 'guptaashish2531@gmail.com'}
+                    className="h-8 text-xs bg-muted/50 font-mono text-muted-foreground cursor-not-allowed"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1">
+                    To (Recipient Email)
+                  </label>
+                  <Input
+                    value={emailRecipient}
+                    onChange={(e) => setEmailRecipient(e.target.value)}
+                    placeholder="billing@vendor.com"
+                    className="h-8 text-xs bg-background font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider block mb-1">
+                    Invoice Context
+                  </label>
+                  <div className="flex items-center gap-2 pt-1 font-medium text-foreground">
+                    <Badge variant="outline" className="font-mono text-[11px]">
+                      #INV-{reviewingEmailInvoice.id}
+                    </Badge>
+                    <span className="truncate max-w-[90px]">{reviewingEmailInvoice.vendor_name}</span>
+                    <span className="font-bold text-emerald-600">
+                      {formatCurrency(reviewingEmailInvoice.amount)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Exception Reasoning Context */}
+              <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-900 dark:text-amber-200 text-xs flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold">Detected Payment Discrepancy: </span>
+                  <span>{reviewingEmailInvoice.resolution_notes || 'Unmatched ledger record requiring review.'}</span>
+                </div>
+              </div>
+
+              {/* Editable Draft Email Content in Textarea */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5 text-indigo-500" />
+                    Autonomous Email Draft (Editable by CFO)
+                  </label>
+                  <span className="text-[11px] text-muted-foreground">
+                    Editable email body
+                  </span>
+                </div>
+                <Textarea
+                  rows={11}
+                  value={emailDraftText}
+                  onChange={(e) => setEmailDraftText(e.target.value)}
+                  placeholder="Draft email content..."
+                  className="font-mono text-xs leading-relaxed resize-y bg-background"
+                />
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="border-t pt-3 flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setReviewingEmailInvoice(null)}
+              disabled={sendingEmail}
+              className="text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleSendEmail}
+              disabled={sendingEmail || !emailDraftText.trim()}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white gap-1.5 text-xs font-semibold h-8"
+            >
+              {sendingEmail ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Dispatching...
+                </>
+              ) : (
+                <>
+                  <Send className="h-3.5 w-3.5" />
+                  Send Email
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Resolution Confirmation Modal */}
       {resolvingItem && (

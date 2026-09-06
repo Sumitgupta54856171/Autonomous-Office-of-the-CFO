@@ -82,10 +82,18 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
+from sqlalchemy import text
+
 async def init_db() -> None:
     """Initialize database schemas and create tables if they do not exist."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Safe migration for new vendor email and draft email columns
+        try:
+            await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS vendor_email VARCHAR(255);"))
+            await conn.execute(text("ALTER TABLE invoices ADD COLUMN IF NOT EXISTS draft_email_content TEXT;"))
+        except Exception:
+            pass
 
 
 async def close_db() -> None:

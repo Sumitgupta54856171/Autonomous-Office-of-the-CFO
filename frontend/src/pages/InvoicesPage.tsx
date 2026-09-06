@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import {
   Card,
   CardHeader,
@@ -31,6 +31,7 @@ import {
 import { fetchInvoices, createInvoice } from '../services/api'
 import type { Invoice, InvoiceStatusType } from '../types'
 import { InvoiceUpload } from '../components/InvoiceUpload'
+import { useLazyLoad } from '../hooks/useLazyLoad'
 
 export function InvoicesPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([])
@@ -161,6 +162,16 @@ export function InvoicesPage() {
       (inv.resolution_notes && inv.resolution_notes.toLowerCase().includes(term))
     )
   })
+
+  // Scroll-based progressive lazy loading
+  const {
+    visibleItems: visibleInvoices,
+    hasMore: hasMoreInvoices,
+    isLoadingMore: loadingMoreInvoices,
+    sentinelRef: invoicesSentinelRef,
+    visibleCount: visibleInvoicesCount,
+    totalCount: totalInvoicesCount,
+  } = useLazyLoad(filteredInvoices, { batchSize: 15, stepSize: 10 })
 
   return (
     <div className="space-y-8">
@@ -342,7 +353,7 @@ export function InvoicesPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filteredInvoices.map((inv) => (
+                  {visibleInvoices.map((inv) => (
                     <TableRow key={inv.id} className="hover:bg-muted/30">
                       <TableCell className="font-mono text-xs font-semibold">
                         #{String(inv.id).padStart(3, '0')}
@@ -373,6 +384,27 @@ export function InvoicesPage() {
                   ))}
                 </TableBody>
               </Table>
+
+              {/* Lazy Loading Sentinel Bar */}
+              <div
+                ref={invoicesSentinelRef}
+                className="p-3 border-t border-border flex items-center justify-between text-xs text-muted-foreground bg-muted/20"
+              >
+                <div className="flex items-center gap-2">
+                  {loadingMoreInvoices && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+                  <span>
+                    Showing {visibleInvoicesCount} of {totalInvoicesCount}{' '}
+                    {totalInvoicesCount === 1 ? 'invoice' : 'invoices'}
+                  </span>
+                </div>
+                {hasMoreInvoices ? (
+                  <span className="text-[11px] text-muted-foreground">Scroll down to load more</span>
+                ) : totalInvoicesCount > 0 ? (
+                  <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+                    All invoices loaded
+                  </span>
+                ) : null}
+              </div>
             </div>
           )}
         </CardContent>
