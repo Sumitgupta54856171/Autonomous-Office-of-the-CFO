@@ -21,8 +21,9 @@
   - [Bank Ledger Operations](#3-bank-ledger-operations)
   - [AI Agent Reconciliation](#4-ai-agent-reconciliation)
   - [Human Review & Vendor Follow-up Email](#5-human-review--vendor-follow-up-email)
-  - [Dashboard Analytics](#6-dashboard-analytics)
-- [Environment Variables Configuration](#-environment-variables-configuration)
+  - [Environment Variables Configuration](#-environment-variables-configuration)
+  - [Backend Configuration (.env)](#1-backend-configuration-env)
+  - [Frontend Configuration (frontend/.env)](#2-frontend-configuration-frontendenv)
 - [Getting Started & Local Setup](#-getting-started--local-setup)
   - [1. Backend API Setup](#1-backend-api-setup)
   - [2. Background Task Worker (Celery + RabbitMQ)](#2-background-task-worker-celery--rabbitmq)
@@ -338,18 +339,66 @@ ReDoc documentation: `http://localhost:8000/redoc`
 
 ## ⚙️ Environment Variables Configuration
 
-Create a `.env` file in the root directory (based on `.env.example`):
+Both the backend and frontend utilize separate `.env` files. **Demo templates (`.env.example`) are provided for both.**
 
-| Variable | Description | Example / Default |
+### 1. Backend Configuration (`.env`)
+
+Create a `.env` file in the root project directory by copying `.env.example`:
+```bash
+cp .env.example .env
+```
+
+| Variable | Description | Demo / Placeholder Value |
 |:---|:---|:---|
-| `DATABASE_URL` | PostgreSQL async connection string | `postgresql+asyncpg://postgres:postgres@localhost:5432/autocfo` |
-| `OPENAI_API_KEY` | OpenAI API key for GPT-4o Vision extraction & LangGraph agent | `sk-proj-...` |
-| `CELERY_BROKER_URL` | RabbitMQ broker URL for async tasks | `amqp://guest:guest@localhost:5672//` |
+| `DATABASE_URL` | PostgreSQL async connection URI | `postgresql+asyncpg://postgres:postgres@localhost:5432/autocfo` |
+| `OPENAI_API_KEY` | OpenAI API key for invoice vision & LangGraph agent | `sk-proj-demo1234567890abcdefghijklmnopqrstuvwxyz` |
+| `CELERY_BROKER_URL` | RabbitMQ broker URL for async task queues | `amqp://guest:guest@localhost:5672//` |
 | `CELERY_RESULT_BACKEND` | Celery result storage backend | `rpc://` |
-| `CLERK_SECRET_KEY` | Clerk backend Secret Key for JWT token verification | `sk_test_...` |
-| `gmail` | Gmail address for SMTP follow-up delivery | `guptaashish2531@gmail.com` |
-| `gmail_secret` | 16-character Google App Password (without spaces) | `ipwhgumxffmlbyni` |
-| `VITE_CLERK_PUBLISHABLE_KEY` | Clerk publishable key for frontend authentication | `pk_test_...` |
+| `CLERK_SECRET_KEY` | Clerk secret key for backend JWT verification | `sk_test_demo1234567890abcdefghijklmnopqrstuvwxyz` |
+| `CLERK_JWKS_URL` | Clerk JWKS URL for cryptographic JWT verification | `https://your-instance.clerk.accounts.dev/.well-known/jwks.json` |
+| `gmail` | Gmail address used for SMTP follow-up emails | `cfo-operations@demo-company.com` |
+| `gmail_secret` | 16-character Google App Password (without spaces) | `abcdfakeapplpass` |
+
+#### Demo Backend `.env` Template:
+```bash
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/autocfo
+OPENAI_API_KEY=sk-proj-demo1234567890abcdefghijklmnopqrstuvwxyz
+CELERY_BROKER_URL=amqp://guest:guest@localhost:5672//
+CELERY_RESULT_BACKEND=rpc://
+CLERK_SECRET_KEY=sk_test_demo1234567890abcdefghijklmnopqrstuvwxyz
+CLERK_JWKS_URL=https://your-instance.clerk.accounts.dev/.well-known/jwks.json
+
+# Gmail SMTP Delivery (Simulated automatically if omitted)
+gmail=cfo-operations@demo-company.com
+gmail_secret=abcdfakeapplpass
+```
+
+---
+
+### 2. Frontend Configuration (`frontend/.env`)
+
+The React application uses Vite environment variables prefixed with `VITE_`.  
+Create a `frontend/.env` file by copying `frontend/.env.example`:
+```bash
+cd frontend
+cp .env.example .env
+```
+
+| Variable | Description | Demo / Placeholder Value |
+|:---|:---|:---|
+| `VITE_API_URL` | Backend FastAPI server base URL | `http://localhost:8000` |
+| `VITE_CLERK_PUBLISHABLE_KEY` | Clerk publishable key for `<ClerkProvider>` auth | `pk_test_demo1234567890abcdefghijklmnopqrstuvwxyz` |
+
+#### Demo Frontend `.env` Template (`frontend/.env`):
+```bash
+# Backend FastAPI API URL (Local development default)
+VITE_API_URL=http://localhost:8000
+
+# Clerk Authentication Publishable Key (Demo / Placeholder)
+VITE_CLERK_PUBLISHABLE_KEY=pk_test_demo1234567890abcdefghijklmnopqrstuvwxyz
+```
+
+> **Note on Clerk Auth:** If `VITE_CLERK_PUBLISHABLE_KEY` is omitted or left blank, the frontend gracefully falls back to Unauthenticated / Demo Mode so you can still preview and test all features without requiring a Clerk account.
 
 ---
 
@@ -386,6 +435,9 @@ cd frontend
 
 # Install dependencies
 npm install
+
+# Setup frontend environment variables (demo template)
+cp .env.example .env
 
 # Start the development server
 npm run dev
