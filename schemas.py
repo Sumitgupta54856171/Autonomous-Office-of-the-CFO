@@ -8,7 +8,7 @@ from models import InvoiceStatus
 
 class InvoiceBase(BaseModel):
     vendor_name: str = Field(..., min_length=1, max_length=255, description="Vendor or supplier name")
-    amount: float = Field(..., gt=0, description="Total invoice amount in currency units")
+    amount: float = Field(..., ge=0, description="Total invoice amount in currency units")
     due_date: date = Field(..., description="Invoice payment due date")
     vendor_email: Optional[str] = Field(default=None, description="Vendor contact email address")
 
