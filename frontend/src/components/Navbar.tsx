@@ -10,10 +10,15 @@ import {
   X,
   CircleDot,
 } from 'lucide-react'
+import { UserButton } from '@clerk/clerk-react'
 import { checkHealth } from '../services/api'
 import { Badge } from '@/components/ui/badge'
 
-export function Navbar() {
+interface NavbarProps {
+  showUserButton?: boolean
+}
+
+export function Navbar({ showUserButton = false }: NavbarProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null)
 
@@ -110,6 +115,12 @@ export function Navbar() {
                   : 'Checking...'}
               </span>
             </div>
+
+            {showUserButton && (
+              <div className="flex items-center ml-1">
+                <UserButton />
+              </div>
+            )}
 
             {/* Mobile Hamburger Button */}
             <button

@@ -30,6 +30,7 @@ import {
 } from 'lucide-react'
 import { fetchInvoices, createInvoice } from '../services/api'
 import type { Invoice, InvoiceStatusType } from '../types'
+import { InvoiceUpload } from '../components/InvoiceUpload'
 
 export function InvoicesPage() {
   const [invoices, setInvoices] = useState<Invoice[]>([])
@@ -167,9 +168,12 @@ export function InvoicesPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight text-foreground">Vendor Invoices</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Create new vendor invoices and monitor their payment matching status across the autonomous pipeline.
+          Upload invoice files for automated AI extraction or manually register vendor invoices into the autonomous pipeline.
         </p>
       </div>
+
+      {/* AI Vision & Document Extraction Section */}
+      <InvoiceUpload onUploadSuccess={loadInvoices} />
 
       {/* Form Card: Add New Invoice */}
       <Card className="shadow-sm border-border">

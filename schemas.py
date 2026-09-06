@@ -118,3 +118,20 @@ class AgentSummaryResponse(BaseModel):
     exceptions: int = Field(..., description="Number of invoices flagged for human review")
 
 
+class UploadInvoiceResponse(BaseModel):
+    """Response returned upon receiving an invoice document upload."""
+    task_id: str = Field(..., description="Celery background task ID")
+    status: str = Field(..., description="Initial task status (e.g. PENDING)")
+    message: str = Field(..., description="Confirmation message")
+    filename: str = Field(..., description="Uploaded original filename")
+
+
+class TaskResponse(BaseModel):
+    """Response returned when polling Celery task status."""
+    task_id: str = Field(..., description="Celery background task ID")
+    status: str = Field(..., description="Current task state (PENDING, STARTED, PROGRESS, SUCCESS, FAILURE)")
+    message: Optional[str] = Field(default=None, description="Current progress or state description")
+    result: Optional[dict] = Field(default=None, description="Extracted invoice data if completed")
+    error: Optional[str] = Field(default=None, description="Error message if task failed")
+
+
