@@ -35,6 +35,7 @@ interface Invoice {
   due_date: string;
   status: string;
   matched_ledger_id?: number | null;
+  reasoning?: string | null;
   resolution_notes?: string | null;
   created_at?: string;
   updated_at?: string;
@@ -423,9 +424,9 @@ export default function App() {
                             <span className="font-medium text-sm text-foreground">
                               {invoice.vendor_name}
                             </span>
-                            {invoice.resolution_notes && (
-                              <span className="text-[11px] text-muted-foreground line-clamp-1 max-w-md">
-                                {invoice.resolution_notes}
+                            {(invoice.reasoning || invoice.resolution_notes) && (
+                              <span className="text-[11px] text-muted-foreground line-clamp-2 max-w-md">
+                                {invoice.reasoning || invoice.resolution_notes}
                               </span>
                             )}
                           </div>

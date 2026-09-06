@@ -27,6 +27,7 @@ class InvoiceResponse(InvoiceBase):
     id: int
     status: str
     matched_ledger_id: Optional[int] = None
+    reasoning: Optional[str] = None
     resolution_notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -108,3 +109,12 @@ class DashboardStats(BaseModel):
     total_invoice_amount: float
     total_ledger_amount: float
     reconciliation_rate_percent: float
+
+
+class AgentSummaryResponse(BaseModel):
+    """Summary response returned by the autonomous LangGraph agent."""
+    processed: int = Field(..., description="Total pending invoices evaluated")
+    paid: int = Field(..., description="Number of invoices reconciled and marked as paid")
+    exceptions: int = Field(..., description="Number of invoices flagged for human review")
+
+
