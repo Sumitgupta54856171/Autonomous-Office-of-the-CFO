@@ -9,6 +9,7 @@ import os
 import shutil
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import List, Optional
 from celery.result import AsyncResult
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
@@ -16,19 +17,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent import AgentState, agent_graph, run_autonomous_agent
+from agent import (
+    AgentState,
+    agent_graph,
+    generate_vendor_exception_email,
+    infer_vendor_email,
+    run_autonomous_agent,
+)
 from auth import verify_clerk_token
 from celery_app import celery_app, extract_invoice_task
 from database import close_db, get_db, init_db
+from email_service import get_gmail_credentials, is_gmail_configured, send_real_gmail
 from models import BankLedger, Invoice, InvoiceStatus
 from schemas import (
     AgentSummaryResponse,
     BankLedgerCreate,
     BankLedgerResponse,
     DashboardStats,
+    EmailConfigStatus,
     InvoiceCreate,
     InvoiceResponse,
     ResolveExceptionRequest,
+    SendVendorEmailRequest,
+    SendVendorEmailResponse,
     TaskResponse,
     UploadInvoiceResponse,
 )
@@ -474,6 +485,109 @@ async def resolve_exception(
         target_status,
     )
     return invoice
+
+
+@app.post(
+    "/api/exceptions/{invoice_id}/send-email",
+    response_model=SendVendorEmailResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Exceptions & Human Review"],
+    summary="Dispatch autonomous vendor follow-up email via Gmail SMTP",
+)
+async def send_vendor_email(
+    invoice_id: int,
+    payload: Optional[SendVendorEmailRequest] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Sends a polite, professional discrepancy follow-up email to the vendor.
+
+    - Uses real Gmail SMTP if configured (`gmail` and `gmail_secret` in .env),
+      or gracefully logs simulated delivery if credentials are unconfigured.
+    - Updates recipient email and draft body if edited by the reviewer.
+    - If `draft_email_content` is missing, dynamically generates it using the AI Agent.
+    - Records audit trail in resolution notes and returns 200 OK.
+    """
+    query = select(Invoice).where(Invoice.id == invoice_id)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice #{invoice_id} not found.",
+        )
+
+    # 1. Update vendor email if provided, or derive fallback
+    recipient = (payload.vendor_email.strip() if payload and payload.vendor_email and payload.vendor_email.strip() else None) or invoice.vendor_email
+    if not recipient:
+        recipient = infer_vendor_email(invoice.vendor_name)
+    invoice.vendor_email = recipient
+
+    # 2. Update draft email content if provided, or generate if missing
+    email_body = (payload.email_content.strip() if payload and payload.email_content and payload.email_content.strip() else None) or invoice.draft_email_content
+    if not email_body:
+        email_body = await generate_vendor_exception_email(
+            vendor_name=invoice.vendor_name,
+            invoice_amount=float(invoice.amount),
+            received_amount=0.0,
+            reasoning=invoice.reasoning or invoice.resolution_notes or "Discrepancy flagged during reconciliation.",
+            due_date=str(invoice.due_date) if invoice.due_date else None,
+            invoice_id=invoice.id,
+        )
+    invoice.draft_email_content = email_body
+
+    # 3. Dispatch real email via Gmail SMTP (or fallback gracefully to simulated)
+    timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    try:
+        dispatch_result = send_real_gmail(
+            recipient_email=recipient,
+            raw_content=email_body,
+            invoice_id=invoice.id,
+            vendor_name=invoice.vendor_name,
+        )
+    except Exception as exc:
+        logger.error("Failed to send real Gmail to %s: %s", recipient, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to dispatch email via Gmail: {str(exc)}",
+        )
+
+    # 4. Record follow-up audit trail
+    mode_tag = "Live Gmail" if dispatch_result.get("is_real_email") else "Simulated"
+    sender_tag = dispatch_result.get("sender_email") or "system"
+    dispatch_note = f"Follow-up email dispatched via {mode_tag} ({sender_tag}) to {recipient} at {timestamp_str}"
+    if invoice.resolution_notes:
+        invoice.resolution_notes = f"{invoice.resolution_notes} | {dispatch_note}"
+    else:
+        invoice.resolution_notes = dispatch_note
+
+    await db.commit()
+    await db.refresh(invoice)
+
+    return SendVendorEmailResponse(
+        status="success",
+        message=dispatch_result.get("message", f"Vendor follow-up email successfully dispatched to {recipient}."),
+        invoice_id=invoice.id,
+        vendor_email=recipient,
+        email_content=email_body,
+        is_real_email=dispatch_result.get("is_real_email", False),
+        sender_email=dispatch_result.get("sender_email"),
+    )
+
+
+@app.get(
+    "/api/email/status",
+    response_model=EmailConfigStatus,
+    tags=["Email"],
+    summary="Check Gmail SMTP configuration status",
+)
+async def get_email_status():
+    """Returns whether real Gmail SMTP delivery is configured and the sender email address."""
+    user, _ = get_gmail_credentials()
+    return EmailConfigStatus(
+        is_configured=bool(user),
+        sender_email=user,
+    )
 
 
 # ---------------------------------------------------------

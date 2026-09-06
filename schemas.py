@@ -10,6 +10,7 @@ class InvoiceBase(BaseModel):
     vendor_name: str = Field(..., min_length=1, max_length=255, description="Vendor or supplier name")
     amount: float = Field(..., gt=0, description="Total invoice amount in currency units")
     due_date: date = Field(..., description="Invoice payment due date")
+    vendor_email: Optional[str] = Field(default=None, description="Vendor contact email address")
 
 
 class InvoiceCreate(InvoiceBase):
@@ -26,6 +27,8 @@ class InvoiceCreate(InvoiceBase):
 class InvoiceResponse(InvoiceBase):
     id: int
     status: str
+    vendor_email: Optional[str] = None
+    draft_email_content: Optional[str] = None
     matched_ledger_id: Optional[int] = None
     reasoning: Optional[str] = None
     resolution_notes: Optional[str] = None
@@ -33,6 +36,29 @@ class InvoiceResponse(InvoiceBase):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SendVendorEmailRequest(BaseModel):
+    """Payload for reviewing, editing, and dispatching autonomous vendor email."""
+    vendor_email: Optional[str] = Field(default=None, description="Recipient vendor email address")
+    email_content: Optional[str] = Field(default=None, description="Updated or approved email body content")
+
+
+class SendVendorEmailResponse(BaseModel):
+    """Response confirmation after dispatching vendor email."""
+    status: str = Field(..., description="Dispatch status, e.g., 'success'")
+    message: str = Field(..., description="Confirmation message")
+    invoice_id: int = Field(..., description="Associated Invoice ID")
+    vendor_email: str = Field(..., description="Recipient email address")
+    email_content: str = Field(..., description="Dispatched email body")
+    is_real_email: bool = Field(default=False, description="True if dispatched via real Gmail SMTP")
+    sender_email: Optional[str] = Field(default=None, description="Sender Gmail address")
+
+
+class EmailConfigStatus(BaseModel):
+    """Status indicating whether real Gmail SMTP delivery is active."""
+    is_configured: bool = Field(..., description="True if Gmail credentials are provided")
+    sender_email: Optional[str] = Field(default=None, description="Configured sender Gmail account")
 
 
 class BankLedgerBase(BaseModel):

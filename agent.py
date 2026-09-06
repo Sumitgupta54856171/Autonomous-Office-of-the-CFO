@@ -136,6 +136,123 @@ async def search_ledger(vendor_keyword: str = "", approximate_amount: float = 0.
         return json.dumps(matched_entries)
 
 
+def infer_vendor_email(vendor_name: str) -> str:
+    """Derives a plausible corporate contact email from vendor name."""
+    clean = re.sub(r"[^a-zA-Z0-9]+", "", vendor_name.lower())
+    domain = f"{clean}.com" if clean else "vendor.com"
+    return f"billing@{domain}"
+
+
+def clean_email_content(raw: str) -> str:
+    """Remove markdown bold asterisks (**), italics (*), headers, and divider lines.
+
+    Produces clean, executive business plain text suitable for direct email transmission.
+    """
+    if not raw:
+        return ""
+    text = str(raw)
+    # Remove bold markdown **word** or __word__
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"__(.*?)__", r"\1", text)
+    # Remove italic markdown *word*
+    text = re.sub(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", r"\1", text)
+    # Remove markdown headers (# Title, ## Subtitle)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    # Remove horizontal rule lines (---, ***, ___)
+    text = re.sub(r"^\s*[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+    # Convert markdown bullet points to clean indented dashes
+    text = re.sub(r"^\s*[\*•]\s*", "  - ", text, flags=re.MULTILINE)
+    # Remove trailing/leading spaces on lines and multiple consecutive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+async def generate_vendor_exception_email(
+    vendor_name: str,
+    invoice_amount: float,
+    received_amount: Optional[float],
+    reasoning: str,
+    due_date: Optional[str] = None,
+    invoice_id: Optional[int] = None,
+) -> str:
+    """Autonomously draft a polite, professional vendor follow-up email explaining discrepancy.
+
+    Formats output cleanly without markdown bold asterisks or formatting symbols.
+    """
+    inv_str = f"${invoice_amount:,.2f}"
+    rec_str = (
+        f"${received_amount:,.2f}"
+        if received_amount is not None and received_amount > 0
+        else "$0.00 (No matching deposit identified in bank ledger)"
+    )
+    due_str = due_date or "Immediate"
+    inv_tag = f"#{invoice_id}" if invoice_id else ""
+
+    prompt = f"""You are the Autonomous CFO Agent for AutoCFO. Write a professional, polite, and clean plain-text email to the vendor regarding an invoice payment discrepancy.
+
+Invoice Information:
+- Vendor Name: {vendor_name}
+- Invoice Reference: {inv_tag}
+- Invoiced Amount: {inv_str}
+- Received / Recorded Amount: {rec_str}
+- Due Date: {due_str}
+- Identified Discrepancy Reason: {reasoning}
+
+CRITICAL FORMATTING INSTRUCTIONS:
+1. Do NOT use markdown bold asterisks (NEVER use **text** or *text*). Output clean plain text.
+2. Do NOT use markdown dividers like --- or ***.
+3. Start directly with the Subject Line on line 1:
+Subject: Payment Discrepancy Notice - Invoice {inv_tag} [{vendor_name}]
+4. Cordially address the Accounts Receivable / Billing Department.
+5. Reference the invoiced amount ({inv_str}), the amount identified in our ledger ({rec_str}), and explain the discrepancy reason ({reasoning}).
+6. Request remittance advice, updated ledger statement, or payment verification.
+7. Conclude with a professional sign-off from 'AutoCFO Autonomous Finance Team'.
+"""
+
+    llm = get_react_llm()
+    if llm is not None:
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+            response = await llm.ainvoke([
+                SystemMessage(
+                    content=(
+                        "You are an enterprise CFO communications assistant specializing in vendor reconciliation emails. "
+                        "Always write in clean business plain text. NEVER use markdown asterisks (no **bold** or *italics*)."
+                    )
+                ),
+                HumanMessage(content=prompt),
+            ])
+            email_text = clean_email_content(str(response.content))
+            if email_text:
+                return email_text
+        except Exception as err:
+            logger.warning("LLM email drafting encountered error: %s. Using structured template.", err)
+
+    # Deterministic high-quality fallback template without markdown asterisks
+    return f"""Subject: Payment Discrepancy Notice - Invoice {inv_tag} [{vendor_name}]
+
+Dear {vendor_name} Accounts Receivable Team,
+
+I hope this message finds you well. I am writing on behalf of the AutoCFO Finance Team regarding Invoice {inv_tag} due on {due_str}.
+
+During our autonomous financial reconciliation process, our system identified an unresolved payment discrepancy:
+  - Invoiced Amount: {inv_str}
+  - Amount Recorded in Bank Ledger: {rec_str}
+  - Discrepancy Details: {reasoning}
+
+To ensure timely reconciliation and maintain accurate accounting records, could you please review this transaction and provide updated remittance advice or an account statement?
+
+If payment has already been initiated under an alternative wire reference or company memo, please let us know so we can update our records accordingly.
+
+Thank you for your prompt assistance.
+
+Sincerely,
+
+AutoCFO Autonomous Finance Team
+accounts@autocfo.com
+"""
+
+
 @tool
 async def update_status(
     invoice_id: int,
@@ -145,11 +262,9 @@ async def update_status(
 ) -> str:
     """Update the status of an invoice in the database along with the AI reasoning.
 
-    Args:
-        invoice_id: The ID of the invoice to update.
-        status: The target status, either 'paid' or 'exception_human_review'.
-        reasoning: Detailed explanation of how the decision was reached (fuzzy match, wire fee, missing deposit, etc.).
-        matched_ledger_id: Optional ID of the matched bank ledger transaction (when status is 'paid').
+    When status is 'exception_human_review', triggers a new LLM call to draft a polite,
+    professional email to the vendor explaining the discrepancy and persists it to
+    the invoice's `draft_email_content` field.
     """
     clean_status = status.strip().lower()
     if clean_status not in (InvoiceStatus.PAID.value, InvoiceStatus.EXCEPTION_HUMAN_REVIEW.value):
@@ -170,6 +285,28 @@ async def update_status(
                 ledger.is_matched = True
                 ledger.matched_invoice_id = invoice.id
                 invoice.matched_ledger_id = ledger.id
+
+        elif clean_status == InvoiceStatus.EXCEPTION_HUMAN_REVIEW.value:
+            # Autonomous Vendor Follow-up: trigger LLM call to draft professional email
+            received_amt = None
+            if matched_ledger_id:
+                ledger = await session.get(BankLedger, matched_ledger_id)
+                if ledger:
+                    received_amt = float(ledger.received_amount)
+
+            if not invoice.vendor_email:
+                invoice.vendor_email = infer_vendor_email(invoice.vendor_name)
+
+            draft_email = await generate_vendor_exception_email(
+                vendor_name=invoice.vendor_name,
+                invoice_amount=float(invoice.amount),
+                received_amount=received_amt,
+                reasoning=reasoning.strip(),
+                due_date=str(invoice.due_date) if invoice.due_date else None,
+                invoice_id=invoice.id,
+            )
+            invoice.draft_email_content = draft_email
+            logger.info("Drafted autonomous vendor exception email for Invoice #%d.", invoice_id)
 
         await session.commit()
         logger.info("🛠️ [Tool: update_status] Updated Invoice #%d -> '%s'.", invoice_id, clean_status)
@@ -194,7 +331,7 @@ Your objective is to reconcile all pending vendor invoices against bank ledger r
      * **Vendor Name Fuzzy Matching**: Recognize corporate abbreviations and variations (e.g., 'TechCorp Solutions' vs 'TC-INC', 'Acme Logistics' vs 'ACME', 'Datadog' vs 'Wire Datadog APM').
      * **Wire Transfer Fees & Deductions**: Outgoing or incoming wires frequently have standard bank transfer fees ($10 - $50) deducted. If an invoice is for $1,000.00 and a bank deposit is $980.00 with a memo mentioning wire fee deduction or matching vendor, this IS A VALID MATCH.
      * **Paid Match**: When a matching transaction is found, call `update_status(invoice_id, status='paid', reasoning='...', matched_ledger_id=<id>)`. Explicitly describe the fuzzy match and any fee adjustments in your reasoning.
-     * **Exceptions / Human Review**: If no transaction matches, or there is an unexplained partial payment, call `update_status(invoice_id, status='exception_human_review', reasoning='...')`. Detail why no match was found.
+     * **Exceptions / Human Review**: If no transaction matches, or there is an unexplained partial payment, call `update_status(invoice_id, status='exception_human_review', reasoning='...')`. When set to 'exception_human_review', the system automatically triggers an LLM call to draft a vendor follow-up email explaining the discrepancy.
 3. Every pending invoice MUST have its status updated to either 'paid' or 'exception_human_review'.
 4. Conclude with a clear summary table of total processed, paid, and exceptions.
 """
@@ -279,6 +416,17 @@ async def _fallback_reconciliation(pending_invoices: List[Dict[str, Any]]) -> Di
                 )
                 invoice.reasoning = reasoning
                 invoice.resolution_notes = reasoning
+                if not invoice.vendor_email:
+                    invoice.vendor_email = infer_vendor_email(invoice.vendor_name)
+
+                invoice.draft_email_content = await generate_vendor_exception_email(
+                    vendor_name=invoice.vendor_name,
+                    invoice_amount=inv_amt,
+                    received_amount=0.0,
+                    reasoning=reasoning,
+                    due_date=str(invoice.due_date) if invoice.due_date else None,
+                    invoice_id=invoice.id,
+                )
                 exception_count += 1
 
         await session.commit()
@@ -356,6 +504,20 @@ async def run_autonomous_agent() -> Dict[str, int]:
                 paid_count += 1
             else:
                 exception_count += 1
+
+            # Ensure all exceptions have vendor email and drafted email content
+            if inv.status == InvoiceStatus.EXCEPTION_HUMAN_REVIEW.value:
+                if not inv.vendor_email:
+                    inv.vendor_email = infer_vendor_email(inv.vendor_name)
+                if not inv.draft_email_content:
+                    inv.draft_email_content = await generate_vendor_exception_email(
+                        vendor_name=inv.vendor_name,
+                        invoice_amount=float(inv.amount),
+                        received_amount=0.0,
+                        reasoning=inv.reasoning or "Payment discrepancy flagged for review.",
+                        due_date=str(inv.due_date) if inv.due_date else None,
+                        invoice_id=inv.id,
+                    )
 
         await session.commit()
 

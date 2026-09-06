@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -40,6 +41,10 @@ class Invoice(Base):
         nullable=False,
         index=True,
     )
+    # Vendor communication fields
+    vendor_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    draft_email_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Production audit fields
     matched_ledger_id: Mapped[Optional[int]] = mapped_column(
         Integer,
