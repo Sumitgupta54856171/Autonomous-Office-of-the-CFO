@@ -153,15 +153,16 @@ export function InvoicesPage() {
     }
   }
 
-  const filteredInvoices = invoices.filter((inv) => {
-    if (!searchTerm.trim()) return true
+  const filteredInvoices = useMemo(() => {
+    if (!searchTerm.trim()) return invoices
     const term = searchTerm.toLowerCase()
-    return (
-      inv.vendor_name.toLowerCase().includes(term) ||
-      String(inv.id).includes(term) ||
-      (inv.resolution_notes && inv.resolution_notes.toLowerCase().includes(term))
+    return invoices.filter(
+      (inv) =>
+        inv.vendor_name.toLowerCase().includes(term) ||
+        String(inv.id).includes(term) ||
+        (inv.resolution_notes && inv.resolution_notes.toLowerCase().includes(term))
     )
-  })
+  }, [invoices, searchTerm])
 
   // Scroll-based progressive lazy loading
   const {

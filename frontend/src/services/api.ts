@@ -9,7 +9,7 @@ import type {
   UploadInvoiceResponse,
 } from '../types'
 
-export const API_BASE_URL = 'http://localhost:8000'
+export const API_BASE_URL =  import.meta.env.VITE_API_URL 
 
 // Token getter injected from Clerk useAuth hook
 let authTokenGetter: (() => Promise<string | null>) | null = null

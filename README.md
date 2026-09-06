@@ -426,3 +426,9 @@ Then visit the web dashboard at `http://localhost:5173` or trigger the AI reconc
 ```bash
 curl -X POST http://localhost:8000/api/agent/run-reconciliation
 ```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License — see the [`LICENSE`](LICENSE) file for details.
