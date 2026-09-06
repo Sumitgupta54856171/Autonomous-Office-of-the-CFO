@@ -35,6 +35,7 @@ export function InvoiceUpload({ onUploadSuccess }: InvoiceUploadProps) {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollCountRef = useRef<number>(0)
 
   // Clean up timer on unmount
   useEffect(() => {
@@ -45,11 +46,21 @@ export function InvoiceUpload({ onUploadSuccess }: InvoiceUploadProps) {
     }
   }, [])
 
-  // Poll task status every 2 seconds until terminal state
+  // Poll task status every 2 seconds until terminal state with 80s safety timeout
   const startPolling = (taskId: string) => {
     if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current)
+    pollCountRef.current = 0
 
     pollingIntervalRef.current = setInterval(async () => {
+      pollCountRef.current += 1
+      if (pollCountRef.current > 40) {
+        // 80 seconds timeout reached
+        if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current)
+        setUploading(false)
+        setErrorMessage('Extraction timed out. The document may still be processing in the background.')
+        return
+      }
+
       try {
         const status = await getTaskStatus(taskId)
         setTaskState(status)
@@ -66,7 +77,7 @@ export function InvoiceUpload({ onUploadSuccess }: InvoiceUploadProps) {
         }
       } catch (err: unknown) {
         console.error('Polling error:', err)
-        // Keep polling for network blips unless repeated
+        // Keep polling for network blips unless timeout is reached
       }
     }, 2000)
   }
@@ -259,6 +270,16 @@ export function InvoiceUpload({ onUploadSuccess }: InvoiceUploadProps) {
               <Badge className="bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border-indigo-300 text-[10px] animate-pulse">
                 {taskState?.status || 'PENDING'}
               </Badge>
+            </div>
+            <div className="pt-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={resetUpload}
+                className="text-xs text-muted-foreground hover:text-foreground h-7"
+              >
+                Cancel
+              </Button>
             </div>
           </div>
         )}

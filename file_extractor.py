@@ -127,30 +127,65 @@ def _fallback_regex_page_extractor(text: str, filename: str, page_num: int) -> E
     )
 
 
+def get_extractor_llm():
+    """Initialize structured LLM using Fireworks AI or OpenAI."""
+    # 1. Fireworks AI (from FIREWORKS_API_KEY or OPENAI_API_KEY starting with fw_)
+    fw_key = os.getenv("FIREWORKS_API_KEY")
+    if not fw_key and os.getenv("OPENAI_API_KEY", "").startswith("fw_"):
+        fw_key = os.getenv("OPENAI_API_KEY")
+
+    if fw_key and fw_key.strip():
+        model_name = os.getenv("FIREWORKS_MODEL", "accounts/fireworks/models/minimax-m3").strip()
+        logger.info("Using Fireworks AI model '%s' for invoice extraction.", model_name)
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                api_key=fw_key.strip(),
+                base_url="https://api.fireworks.ai/inference/v1",
+                model=model_name,
+                temperature=0.0,
+                timeout=25,
+            )
+        except Exception as e:
+            logger.warning("Failed initializing Fireworks LLM: %s", e)
+
+    # 2. OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY")
+    if openai_key and openai_key.startswith("sk-"):
+        logger.info("Using OpenAI gpt-4o-mini for invoice extraction.")
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                api_key=openai_key.strip(),
+                model="gpt-4o-mini",
+                temperature=0.0,
+                timeout=25,
+            )
+        except Exception as e:
+            logger.warning("Failed initializing OpenAI LLM: %s", e)
+
+    return None
+
+
 def _extract_single_page_invoice(
     text: str,
     page: Optional[fitz.Page],
     filename: str,
     page_num: int,
-    openai_key: Optional[str],
+    openai_key: Optional[str] = None,
 ) -> Optional[ExtractedInvoice]:
     """Extract an invoice from a single page's text or image."""
-    if not openai_key:
+    llm = get_extractor_llm()
+    if not llm:
         return _fallback_regex_page_extractor(text, filename, page_num)
 
     try:
-        from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0,
-            openai_api_key=openai_key,
-        )
         structured_llm = llm.with_structured_output(ExtractedInvoice)
 
         # 1. Text-based extraction if text is rich
-        if text and len(text.strip()) > 30:
+        if text and len(text.strip()) > 20:
             system_msg = SystemMessage(
                 content=(
                     f"You are an enterprise CFO auditor. Extract the vendor name, total amount due, "
@@ -196,33 +231,32 @@ def _extract_single_page_invoice(
 
 
 def extract_invoices_from_document(file_path: str) -> List[ExtractedInvoice]:
-    """Scan and extract all invoices across all pages of the document."""
+    """Scan and extract all invoices across all pages of the document (PDF, PNG, JPG, JPEG)."""
     filename = os.path.basename(file_path)
     lower_path = file_path.lower()
-    openai_key = os.getenv("OPENAI_API_KEY")
+    is_image = lower_path.endswith((".png", ".jpg", ".jpeg"))
 
-    # If it's a standalone image file (.png, .jpg, .jpeg)
-    if lower_path.endswith((".png", ".jpg", ".jpeg")):
-        with open(file_path, "rb") as f:
-            b64_img = base64.b64encode(f.read()).decode("utf-8")
-        if openai_key:
-            try:
-                from langchain_openai import ChatOpenAI
-                from langchain_core.messages import HumanMessage
-                llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, openai_api_key=openai_key)
-                structured_llm = llm.with_structured_output(ExtractedInvoice)
-                vision_msg = HumanMessage(
-                    content=[
-                        {"type": "text", "text": "Extract vendor_name, amount, and due_date (YYYY-MM-DD) from this invoice image."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_img}"}},
-                    ]
-                )
-                result = structured_llm.invoke([vision_msg])
-                if isinstance(result, ExtractedInvoice):
-                    result.page_number = 1
-                    return [result]
-            except Exception as e:
-                logger.warning("Vision extraction failed on image: %s", e)
+    # 1. Image documents (.png, .jpg, .jpeg)
+    if is_image:
+        logger.info("Processing image invoice '%s'...", filename)
+        try:
+            with fitz.open(file_path) as img_doc:
+                # Convert image to PDF in-memory so PyMuPDF handles it uniformly
+                pdf_bytes = img_doc.convert_to_pdf()
+                with fitz.open("pdf", pdf_bytes) as doc:
+                    page = doc[0]
+                    page_text = page.get_text("text").strip()
+                    inv = _extract_single_page_invoice(
+                        text=page_text,
+                        page=page,
+                        filename=filename,
+                        page_num=1,
+                    )
+                    if inv:
+                        return [inv]
+        except Exception as img_err:
+            logger.warning("PyMuPDF image conversion failed: %s. Falling back to heuristic extractor.", img_err)
+
         return [_fallback_regex_page_extractor("", filename, 1)]
 
     # If it's a PDF document: inspect all pages
@@ -248,7 +282,6 @@ def extract_invoices_from_document(file_path: str) -> List[ExtractedInvoice]:
                     page=page,
                     filename=filename,
                     page_num=page_num,
-                    openai_key=openai_key,
                 )
                 if inv:
                     extracted_list.append(inv)
@@ -300,9 +333,19 @@ async def _save_invoices_to_db(
                 except Exception:
                     parsed_date = date.today()
 
+                vendor = item.vendor_name.strip() if item.vendor_name else ""
+                if not vendor or vendor.upper() in ("N/A", "NONE", "UNKNOWN"):
+                    base_title = os.path.splitext(os.path.basename(original_file_name))[0].replace("_", " ").replace("-", " ").title()
+                    # Strip any leading uuid if present
+                    if "_" in base_title:
+                        parts = base_title.split(" ", 1)
+                        if len(parts) > 1 and len(parts[0]) >= 16:
+                            base_title = parts[1]
+                    vendor = f"{base_title}"
+
                 page_info = f" (Page {item.page_number})" if item.page_number else ""
                 new_invoice = Invoice(
-                    vendor_name=item.vendor_name.strip(),
+                    vendor_name=vendor,
                     amount=round(float(item.amount), 2),
                     due_date=parsed_date,
                     status=InvoiceStatus.PENDING.value,

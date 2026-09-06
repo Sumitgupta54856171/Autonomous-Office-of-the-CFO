@@ -4,18 +4,22 @@ Exposes RESTful endpoints for invoice management, bank ledger operations,
 AI agent reconciliation, and human review exception resolution.
 """
 
+import asyncio
 import logging
 import os
 import shutil
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from celery.result import AsyncResult
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from file_extractor import extract_and_persist_invoice
 
 from agent import (
     AgentState,
@@ -195,6 +199,32 @@ TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
 os.makedirs(TEMP_DIR, exist_ok=True)
 ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
 
+# In-memory tracking for extraction tasks: provides self-healing when Celery worker is unavailable/stopped
+IN_MEMORY_TASKS: Dict[str, Dict[str, Any]] = {}
+
+
+def _run_local_extract(task_id: str, file_path: str):
+    """Fallback local executor that processes extraction directly when Celery is inactive."""
+    logger.info("Starting local async extraction for task [%s] on file: %s", task_id, file_path)
+    try:
+        if task_id in IN_MEMORY_TASKS:
+            IN_MEMORY_TASKS[task_id]["status"] = "PROGRESS"
+            IN_MEMORY_TASKS[task_id]["message"] = "Processing document with PyMuPDF and AI Vision..."
+        result = extract_and_persist_invoice(file_path)
+        if task_id in IN_MEMORY_TASKS:
+            IN_MEMORY_TASKS[task_id]["status"] = "SUCCESS"
+            IN_MEMORY_TASKS[task_id]["message"] = "Invoice extracted and persisted to database with status='pending'."
+            IN_MEMORY_TASKS[task_id]["result"] = result
+            IN_MEMORY_TASKS[task_id]["completed_at"] = time.time()
+        logger.info("Local extraction completed successfully for task [%s]", task_id)
+    except Exception as exc:
+        logger.error("Local extraction failed for task [%s]: %s", task_id, exc, exc_info=True)
+        if task_id in IN_MEMORY_TASKS:
+            IN_MEMORY_TASKS[task_id]["status"] = "FAILURE"
+            IN_MEMORY_TASKS[task_id]["message"] = "AI invoice extraction encountered an error."
+            IN_MEMORY_TASKS[task_id]["error"] = str(exc)
+            IN_MEMORY_TASKS[task_id]["completed_at"] = time.time()
+
 
 @app.post(
     "/api/invoices/upload",
@@ -207,8 +237,9 @@ async def upload_invoice(
     file: UploadFile = File(...),
     current_user: dict = Depends(verify_clerk_token),
 ):
-    """Accepts an invoice document (PDF or image), saves it to ./temp,
-    triggers the background Celery task, and returns 202 Accepted with a task_id.
+    """Accepts an invoice document (PDF, PNG, JPG, JPEG), saves it to ./temp,
+    triggers background extraction (via Celery if active, else direct thread pool runner),
+    and returns 202 Accepted with a task_id.
     """
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -231,23 +262,46 @@ async def upload_invoice(
             detail=f"Failed to store uploaded file: {str(e)}",
         )
 
-    # Enqueue background Celery task
+    task_id = str(uuid.uuid4())
+    IN_MEMORY_TASKS[task_id] = {
+        "task_id": task_id,
+        "status": "PROGRESS",
+        "message": "Invoice received. Extracting text and vision with AI...",
+        "file_path": file_path,
+        "filename": file.filename or "invoice",
+        "created_at": time.time(),
+        "dispatched_to_celery": False,
+    }
+
+    # Check if a Celery worker is active
+    celery_ready = False
     try:
-        task = extract_invoice_task.delay(file_path)
-        logger.info("Enqueued Celery invoice extraction task [%s] for file: %s", task.id, file.filename)
-    except Exception as exc:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        logger.error("Failed to dispatch Celery task: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Background task queue unavailable: {str(exc)}",
-        )
+        insp = celery_app.control.inspect(timeout=0.25)
+        workers = insp.ping()
+        if workers:
+            celery_ready = True
+    except Exception:
+        celery_ready = False
+
+    if celery_ready:
+        try:
+            extract_invoice_task.apply_async(args=[file_path], task_id=task_id)
+            IN_MEMORY_TASKS[task_id]["dispatched_to_celery"] = True
+            logger.info("Enqueued Celery invoice extraction task [%s] for file: %s", task_id, file.filename)
+        except Exception as exc:
+            logger.warning("Failed to dispatch Celery task: %s. Falling back to local runner.", exc)
+            celery_ready = False
+
+    if not celery_ready:
+        # Fallback: Run in background thread pool immediately
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _run_local_extract, task_id, file_path)
+        logger.info("Dispatched local background extraction task [%s] for file: %s", task_id, file.filename)
 
     return UploadInvoiceResponse(
-        task_id=task.id,
+        task_id=task_id,
         status="PENDING",
-        message="Invoice upload received. Async AI vision extraction enqueued.",
+        message="Invoice upload received. Async AI vision extraction started.",
         filename=file.filename or "invoice",
     )
 
@@ -256,31 +310,93 @@ async def upload_invoice(
     "/api/tasks/{task_id}",
     response_model=TaskResponse,
     tags=["Async Tasks"],
-    summary="Poll status of Celery background extraction task",
+    summary="Poll status of background extraction task",
 )
 async def get_task_status(
     task_id: str,
     current_user: dict = Depends(verify_clerk_token),
 ):
-    """Returns the current state and result of the Celery task (PENDING, STARTED, SUCCESS, FAILURE)."""
+    """Returns the current state and result of the extraction task (PENDING, STARTED, PROGRESS, SUCCESS, FAILURE)."""
+    # 1. Check in-memory task registry first
+    mem_task = IN_MEMORY_TASKS.get(task_id)
+
+    if mem_task:
+        if mem_task.get("status") == "SUCCESS":
+            return TaskResponse(
+                task_id=task_id,
+                status="SUCCESS",
+                message=mem_task.get("message", "Invoice extracted and persisted to database with status='pending'."),
+                result=mem_task.get("result"),
+            )
+        elif mem_task.get("status") == "FAILURE":
+            return TaskResponse(
+                task_id=task_id,
+                status="FAILURE",
+                message=mem_task.get("message", "AI invoice extraction encountered an error."),
+                error=mem_task.get("error", "Task failed"),
+            )
+
+        # If it was dispatched to Celery, check Celery result
+        if mem_task.get("dispatched_to_celery"):
+            try:
+                task = AsyncResult(task_id, app=celery_app)
+                state = task.state
+                if state == "SUCCESS":
+                    mem_task["status"] = "SUCCESS"
+                    mem_task["result"] = task.result
+                    return TaskResponse(
+                        task_id=task_id,
+                        status="SUCCESS",
+                        message="Invoice extracted and persisted to database with status='pending'.",
+                        result=task.result,
+                    )
+                elif state == "FAILURE":
+                    mem_task["status"] = "FAILURE"
+                    mem_task["error"] = str(task.info or "Task failed")
+                    return TaskResponse(
+                        task_id=task_id,
+                        status="FAILURE",
+                        message="AI invoice extraction encountered an error.",
+                        error=str(task.info or "Task failed"),
+                    )
+                elif state in ("STARTED", "PROGRESS"):
+                    progress_meta = task.info if isinstance(task.info, dict) else {}
+                    return TaskResponse(
+                        task_id=task_id,
+                        status="PROGRESS",
+                        message=progress_meta.get("status", "PyMuPDF & AI Vision model extracting fields..."),
+                    )
+            except Exception as e:
+                logger.warning("Celery status inspection error for task [%s]: %s", task_id, e)
+
+        # Self-healing: If task is still pending/progressing and more than 3 seconds elapsed
+        # and file_path still exists, it means Celery worker didn't pick it up or is stuck!
+        elapsed = time.time() - mem_task.get("created_at", time.time())
+        file_path = mem_task.get("file_path")
+        if elapsed > 3.0 and file_path and os.path.exists(file_path) and not mem_task.get("local_running"):
+            logger.warning(
+                "Task [%s] has been waiting for %0.1fs. Triggering local self-healing execution.",
+                task_id,
+                elapsed,
+            )
+            mem_task["local_running"] = True
+            mem_task["status"] = "PROGRESS"
+            mem_task["message"] = "Extracting document data with PyMuPDF and AI Vision..."
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _run_local_extract, task_id, file_path)
+
+        return TaskResponse(
+            task_id=task_id,
+            status=mem_task.get("status", "PROGRESS"),
+            message=mem_task.get("message", "Extracting document data with PyMuPDF and AI Vision..."),
+        )
+
+    # 2. Fall back to Celery AsyncResult (for older tasks or tasks started externally)
     try:
         task = AsyncResult(task_id, app=celery_app)
         state = task.state
 
-        if state in ("PENDING", "RECEIVED"):
-            return TaskResponse(
-                task_id=task_id,
-                status="PENDING",
-                message="Invoice task is queued and waiting for an available worker...",
-            )
-        elif state in ("STARTED", "PROGRESS"):
-            progress_meta = task.info if isinstance(task.info, dict) else {}
-            return TaskResponse(
-                task_id=task_id,
-                status="PROGRESS",
-                message=progress_meta.get("status", "PyMuPDF & AI Vision model extracting fields..."),
-            )
-        elif state == "SUCCESS":
+        if state == "SUCCESS":
             return TaskResponse(
                 task_id=task_id,
                 status="SUCCESS",
@@ -294,11 +410,18 @@ async def get_task_status(
                 message="AI invoice extraction encountered an error.",
                 error=str(task.info or "Task failed"),
             )
+        elif state in ("STARTED", "PROGRESS"):
+            progress_meta = task.info if isinstance(task.info, dict) else {}
+            return TaskResponse(
+                task_id=task_id,
+                status="PROGRESS",
+                message=progress_meta.get("status", "PyMuPDF & AI Vision model extracting fields..."),
+            )
         else:
             return TaskResponse(
                 task_id=task_id,
-                status=state,
-                message=f"Current task status: {state}",
+                status="PROGRESS",
+                message="Invoice task is queued and processing with PyMuPDF & AI Vision...",
             )
     except Exception as e:
         logger.error("Failed to fetch task status for %s: %s", task_id, e)
