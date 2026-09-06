@@ -46,6 +46,7 @@ class Invoice(Base):
         ForeignKey("bank_ledger.id", ondelete="SET NULL"),
         nullable=True,
     )
+    reasoning: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     resolution_notes: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
