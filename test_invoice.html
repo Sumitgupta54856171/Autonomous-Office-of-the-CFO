@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hackathon Test Invoices</title>
+    <style>
+        body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; }
+        .invoice-box { max-width: 800px; margin: 20px auto; padding: 40px; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }
+        h1 { color: #2c3e50; text-align: right; margin-bottom: 0; }
+        .header-grid { display: flex; justify-content: space-between; margin-bottom: 40px; margin-top: 20px; }
+        .details-grid { display: flex; justify-content: space-between; margin-bottom: 30px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        th, td { border: 1px solid #eee; padding: 12px; text-align: left; }
+        th { background-color: #f8f9fa; font-weight: bold; }
+        .totals-row td { font-weight: bold; font-size: 1.1em; background-color: #f8f9fa; }
+        
+        /* Yeh CSS print karte waqt har invoice ko naye page par bhej degi */
+        @media print {
+            body { background: white; }
+            .invoice-box { border: none; box-shadow: none; margin: 0; padding: 20px; }
+            .page-break { page-break-after: always; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- INVOICE 1: The Perfect Match -->
+    <div class="invoice-box page-break">
+        <h1>INVOICE</h1>
+        <div class="header-grid">
+            <div>
+                <h2>TechCorp</h2>
+                <p>123 Innovation Drive<br>San Francisco, CA 94107</p>
+            </div>
+            <div style="text-align: right;">
+                <p><strong>Invoice #:</strong> INV-1001</p>
+                <p><strong>Date:</strong> August 25, 2026</p>
+                <p><strong>Due Date:</strong> 2026-09-10</p>
+            </div>
+        </div>
+        <div class="details-grid">
+            <div><strong>Bill To:</strong><br>AutoCFO Headquarters</div>
+        </div>
+        <table>
+            <tr><th>Description</th><th>Amount</th></tr>
+            <tr><td>Cloud Hosting (August)</td><td>$800.00</td></tr>
+            <tr><td>Database Backup Services</td><td>$200.00</td></tr>
+            <tr class="totals-row"><td>Total Amount Due</td><td>$1000.00</td></tr>
+        </table>
+    </div>
+
+    <!-- INVOICE 2: The Smart AI Test (Fuzzy Match) -->
+    <div class="invoice-box page-break">
+        <h1>INVOICE</h1>
+        <div class="header-grid">
+            <div>
+                <h2>Global Solutions Inc</h2>
+                <p>456 Enterprise Ave<br>Boston, MA 02110</p>
+            </div>
+            <div style="text-align: right;">
+                <p><strong>Invoice #:</strong> GS-2026-99</p>
+                <p><strong>Date:</strong> September 01, 2026</p>
+                <p><strong>Due Date:</strong> 2026-09-12</p>
+            </div>
+        </div>
+        <div class="details-grid">
+            <div><strong>Bill To:</strong><br>AutoCFO Headquarters</div>
+        </div>
+        <table>
+            <tr><th>Description</th><th>Amount</th></tr>
+            <tr><td>Enterprise Software License</td><td>$5000.00</td></tr>
+            <tr class="totals-row"><td>Total Amount Due</td><td>$5000.00</td></tr>
+        </table>
+    </div>
+
+    <!-- INVOICE 3: The Exception (Human Review Needed) -->
+    <div class="invoice-box">
+        <h1>INVOICE</h1>
+        <div class="header-grid">
+            <div>
+                <h2>Acme Supplies</h2>
+                <p>789 Industrial Blvd<br>Austin, TX 78701</p>
+            </div>
+            <div style="text-align: right;">
+                <p><strong>Invoice #:</strong> ACME-5544</p>
+                <p><strong>Date:</strong> September 05, 2026</p>
+                <p><strong>Due Date:</strong> 2026-09-15</p>
+            </div>
+        </div>
+        <div class="details-grid">
+            <div><strong>Bill To:</strong><br>AutoCFO Headquarters</div>
+        </div>
+        <table>
+            <tr><th>Description</th><th>Amount</th></tr>
+            <tr><td>Office Furniture (Desks & Chairs)</td><td>$2500.00</td></tr>
+            <tr class="totals-row"><td>Total Amount Due</td><td>$2500.00</td></tr>
+        </table>
+    </div>
+
+</body>
+</html>

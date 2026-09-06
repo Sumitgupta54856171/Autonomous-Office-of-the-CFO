@@ -57,3 +57,39 @@ export interface BannerNotification {
   message: string
   subMessage?: string
 }
+
+export interface UploadInvoiceResponse {
+  task_id: string
+  status: string
+  message: string
+  filename: string
+}
+
+export interface ExtractedInvoiceSummary {
+  invoice_id: number
+  vendor_name: string
+  amount: number
+  due_date: string
+  status: string
+  reasoning?: string | null
+}
+
+export interface TaskStatusResponse {
+  task_id: string
+  status: 'PENDING' | 'STARTED' | 'PROGRESS' | 'SUCCESS' | 'FAILURE' | string
+  message?: string | null
+  result?: {
+    total_extracted?: number
+    invoices?: ExtractedInvoiceSummary[]
+    invoice_id?: number
+    vendor_name?: string
+    amount?: number
+    due_date?: string
+    status?: string
+    reasoning?: string | null
+    message?: string
+  } | null
+  error?: string | null
+}
+
+

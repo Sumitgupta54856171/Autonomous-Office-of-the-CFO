@@ -5,15 +5,20 @@ AI agent reconciliation, and human review exception resolution.
 """
 
 import logging
+import os
+import shutil
+import uuid
 from contextlib import asynccontextmanager
 from typing import List, Optional
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from celery.result import AsyncResult
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agent import AgentState, agent_graph, run_autonomous_agent
-
+from auth import verify_clerk_token
+from celery_app import celery_app, extract_invoice_task
 from database import close_db, get_db, init_db
 from models import BankLedger, Invoice, InvoiceStatus
 from schemas import (
@@ -23,8 +28,9 @@ from schemas import (
     DashboardStats,
     InvoiceCreate,
     InvoiceResponse,
-    
     ResolveExceptionRequest,
+    TaskResponse,
+    UploadInvoiceResponse,
 )
 
 # Configure structured logging
@@ -169,6 +175,126 @@ async def get_invoice(invoice_id: int, db: AsyncSession = Depends(get_db)):
             detail=f"Invoice with ID {invoice_id} not found.",
         )
     return invoice
+
+
+# ---------------------------------------------------------
+# Invoice Document Upload & Asynchronous AI Extraction
+# ---------------------------------------------------------
+TEMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+os.makedirs(TEMP_DIR, exist_ok=True)
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+
+
+@app.post(
+    "/api/invoices/upload",
+    response_model=UploadInvoiceResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    tags=["Invoices"],
+    summary="Upload invoice file for async AI vision extraction",
+)
+async def upload_invoice(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(verify_clerk_token),
+):
+    """Accepts an invoice document (PDF or image), saves it to ./temp,
+    triggers the background Celery task, and returns 202 Accepted with a task_id.
+    """
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported file format '{ext}'. Supported formats: PDF, PNG, JPG, JPEG.",
+        )
+
+    # Generate safe unique filename
+    safe_name = f"{uuid.uuid4().hex}_{file.filename}"
+    file_path = os.path.join(TEMP_DIR, safe_name)
+
+    try:
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        logger.error("Failed to save uploaded file: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store uploaded file: {str(e)}",
+        )
+
+    # Enqueue background Celery task
+    try:
+        task = extract_invoice_task.delay(file_path)
+        logger.info("Enqueued Celery invoice extraction task [%s] for file: %s", task.id, file.filename)
+    except Exception as exc:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        logger.error("Failed to dispatch Celery task: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Background task queue unavailable: {str(exc)}",
+        )
+
+    return UploadInvoiceResponse(
+        task_id=task.id,
+        status="PENDING",
+        message="Invoice upload received. Async AI vision extraction enqueued.",
+        filename=file.filename or "invoice",
+    )
+
+
+@app.get(
+    "/api/tasks/{task_id}",
+    response_model=TaskResponse,
+    tags=["Async Tasks"],
+    summary="Poll status of Celery background extraction task",
+)
+async def get_task_status(
+    task_id: str,
+    current_user: dict = Depends(verify_clerk_token),
+):
+    """Returns the current state and result of the Celery task (PENDING, STARTED, SUCCESS, FAILURE)."""
+    try:
+        task = AsyncResult(task_id, app=celery_app)
+        state = task.state
+
+        if state in ("PENDING", "RECEIVED"):
+            return TaskResponse(
+                task_id=task_id,
+                status="PENDING",
+                message="Invoice task is queued and waiting for an available worker...",
+            )
+        elif state in ("STARTED", "PROGRESS"):
+            progress_meta = task.info if isinstance(task.info, dict) else {}
+            return TaskResponse(
+                task_id=task_id,
+                status="PROGRESS",
+                message=progress_meta.get("status", "PyMuPDF & AI Vision model extracting fields..."),
+            )
+        elif state == "SUCCESS":
+            return TaskResponse(
+                task_id=task_id,
+                status="SUCCESS",
+                message="Invoice extracted and persisted to database with status='pending'.",
+                result=task.result,
+            )
+        elif state == "FAILURE":
+            return TaskResponse(
+                task_id=task_id,
+                status="FAILURE",
+                message="AI invoice extraction encountered an error.",
+                error=str(task.info or "Task failed"),
+            )
+        else:
+            return TaskResponse(
+                task_id=task_id,
+                status=state,
+                message=f"Current task status: {state}",
+            )
+    except Exception as e:
+        logger.error("Failed to fetch task status for %s: %s", task_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error inspecting task: {str(e)}",
+        )
 
 
 # ---------------------------------------------------------
