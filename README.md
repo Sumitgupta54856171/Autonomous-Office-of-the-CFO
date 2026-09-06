@@ -81,33 +81,33 @@ Modern finance departments spend hundreds of hours manually cross-referencing ve
 
 ```mermaid
 flowchart TD
-    subgraph Ingestion["1. Document & Ingestion Pipeline"]
-        A[Vendor PDF Upload] -->|POST /api/invoices/upload-async| B[FastAPI Endpoint]
-        B -->|Enqueue Task| C[(RabbitMQ Broker)]
-        C --> D[Celery Async Worker]
-        D -->|PyMuPDF Text Extract| E[OpenAI GPT-4o Vision Extractor]
-        E -->|Multi-Invoice Parsing| F[(PostgreSQL Database)]
+    subgraph Ingestion ["1. Document & Ingestion Pipeline"]
+        A["Vendor PDF Upload"] -->|"POST /api/invoices/upload-async"| B["FastAPI Endpoint"]
+        B -->|"Enqueue Task"| C[(RabbitMQ Broker)]
+        C --> D["Celery Async Worker"]
+        D -->|"PyMuPDF Text Extract"| E["OpenAI GPT-4o Vision Extractor"]
+        E -->|"Multi-Invoice Parsing"| F[(PostgreSQL Database)]
     end
 
-    subgraph Reconciliation["2. Autonomous LangGraph Reconciliation"]
-        G[Manual or Scheduled Trigger] -->|POST /api/agent/run-reconciliation| H[LangGraph AI Agent]
-        F -->|Fetch Pending Invoices & Ledger| H
-        H --> I{Match Evaluation}
-        I -->|Exact Match| J[Status: 'paid' + Link Ledger Record]
-        I -->|Partial / Unmatched| K[Status: 'exception_human_review']
-        K --> L[Autonomous Vendor Email Draft Node]
-        L -->|Save Draft| F
+    subgraph Reconciliation ["2. Autonomous LangGraph Reconciliation"]
+        G["Manual or Scheduled Trigger"] -->|"POST /api/agent/run-reconciliation"| H["LangGraph AI Agent"]
+        F -->|"Fetch Pending Invoices & Ledger"| H
+        H --> I{"Match Evaluation"}
+        I -->|"Exact Match"| J["Status: paid & Link Ledger Record"]
+        I -->|"Partial or Unmatched"| K["Status: exception_human_review"]
+        K --> L["Autonomous Vendor Email Draft Node"]
+        L -->|"Save Draft"| F
         J --> F
     end
 
-    subgraph HumanLoop["3. Human-in-the-Loop & Vendor Follow-up"]
-        F -->|GET /api/exceptions/| M[React CFO Command Center]
-        M --> N[Review Exception Queue]
-        N -->|Inspect & Edit Draft| O[Vendor Email Review Dialog]
-        O -->|POST /api/exceptions/{id}/send-email| P[Gmail SMTP Delivery Service]
-        P -->|Real Delivery SSL/TLS| Q[Vendor Inbox]
-        N -->|Approve or Reject| R[POST /api/exceptions/{id}/resolve]
-        R -->|Update Audit Trail| F
+    subgraph HumanLoop ["3. Human-in-the-Loop & Vendor Follow-up"]
+        F -->|"GET /api/exceptions/"| M["React CFO Command Center"]
+        M --> N["Review Exception Queue"]
+        N -->|"Inspect & Edit Draft"| O["Vendor Email Review Dialog"]
+        O -->|"POST /api/exceptions/:id/send-email"| P["Gmail SMTP Delivery Service"]
+        P -->|"Real Delivery SSL/TLS"| Q["Vendor Inbox"]
+        N -->|"Approve or Reject"| R["POST /api/exceptions/:id/resolve"]
+        R -->|"Update Audit Trail"| F
     end
 ```
 
